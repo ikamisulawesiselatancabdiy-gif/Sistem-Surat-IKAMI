@@ -1309,14 +1309,24 @@ function collectPayload() {
 
 async function reserveNomor(payload) {
   if (manualNomorMode) {
-    if (!payload.nomorManual) throw new Error("Nomor surat manual belum diisi.");
+    if (!payload.nomorManual) {
+      throw new Error("Nomor surat manual belum diisi.");
+    }
+
     payload.nomor = payload.nomorManual;
     return null;
   }
+
   const counters = await loadCountersByJenis();
   const code = payload.code;
   const nextCounter = Number(counters[code] || 0) + 1;
+
+  // Simpan counter terbaru
+  counters[code] = nextCounter;
+  await saveCountersByJenis(counters);
+
   payload.nomor = buildNomor(nextCounter);
+
   return { code, nextCounter, counters };
 }
 
