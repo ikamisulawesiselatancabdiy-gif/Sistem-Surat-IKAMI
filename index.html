@@ -1326,7 +1326,7 @@ async function finalizeHistory(payload, counterToSave) {
     .insert({
       nomor: payload.nomor,
       jenis: payload.code || "",
-      tanggal: payload.tanggalSurat || "",
+      tanggal: payload.iso || null,
       hal: payload.hal || "",
       kepada: payload.kepada || "",
       isi: Array.isArray(payload.paragraf)
