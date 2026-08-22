@@ -501,23 +501,42 @@ $("btnEditNomor").addEventListener("click", () => {
 
 // ---------- Riwayat ----------
 async function loadRiwayat() {
-  try {
-    if (window.storage && typeof window.storage.get === "function") {
-      const res = await window.storage.get("riwayat_surat", true);
-      return res ? JSON.parse(res.value) : [];
-    }
-    const raw = localStorage.getItem("riwayat_surat");
-    return raw ? JSON.parse(raw) : [];
-  } catch (e) {
-    return [];
+  const { data, error } = await supabaseClient
+    .from("surat")
+    .select("id, created_at, nomor, jenis, tanggal, hal, kepada, isi, kota, periode")
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    console.error("Gagal memuat riwayat:", error);
+    throw new Error("Gagal memuat riwayat: " + error.message);
   }
+
+  return data || [];
 }
+
 async function saveRiwayat(list) {
-  const value = JSON.stringify(list.slice(-100));
-  if (window.storage && typeof window.storage.set === "function") {
-    await window.storage.set("riwayat_surat", value, true);
-  } else {
-    localStorage.setItem("riwayat_surat", value);
+  const rows = Array.isArray(list) ? list.slice(-100) : [];
+
+  for (const item of rows) {
+    const { error } = await supabaseClient
+      .from("surat")
+      .upsert({
+        nomor: item.nomor || "",
+        jenis: item.code || item.jenis || "",
+        tanggal: item.tanggal || "",
+        hal: item.hal || "",
+        kepada: item.kepada || "",
+        isi: Array.isArray(item.paragraf)
+          ? item.paragraf.join("\n\n")
+          : (item.isi || ""),
+        kota: item.kotaSurat || item.kota || "",
+        periode: item.periode || ""
+      });
+
+    if (error) {
+      console.error("Gagal menyimpan riwayat:", error);
+      throw new Error("Gagal menyimpan riwayat: " + error.message);
+    }
   }
 }
 function escapeHtml(value) {
@@ -553,31 +572,62 @@ async function syncCountersFromHistory(list = null) {
   return counters;
 }
 
-async function hapusRiwayat(index) {
+async function hapusRiwayat(id) {
   const list = await loadRiwayat();
-  if (index < 0 || index >= list.length) return;
-  const item = list[index];
-  const ok = confirm(`Hapus surat ${item.nomor || "ini"} dari riwayat?\n\nNomor urut akan disesuaikan dengan riwayat yang tersisa.`);
+
+  const item = list.find(
+    r => String(r.id) === String(id)
+  );
+
+  if (!item) return;
+
+  const ok = confirm(
+    `Hapus surat ${item.nomor || "ini"} dari riwayat?`
+  );
+
   if (!ok) return;
-  list.splice(index, 1);
-  await saveRiwayat(list);
-  await syncCountersFromHistory(list);
+
+  const { error } = await supabaseClient
+    .from("surat")
+    .delete()
+    .eq("id", id);
+
+  if (error) {
+    console.error("Gagal menghapus riwayat:", error);
+    alert("Gagal menghapus riwayat: " + error.message);
+    return;
+  }
+
   await renderRiwayat();
   await refreshNomorPreview();
 }
 
 async function hapusSemuaRiwayat() {
   const list = await loadRiwayat();
+
   if (!list.length) return;
-  const ok = confirm("Hapus semua riwayat surat?\n\nRiwayat dan seluruh nomor urut otomatis akan direset ke 0.");
+
+  const ok = confirm(
+    "Hapus semua riwayat surat?"
+  );
+
   if (!ok) return;
-  await saveRiwayat([]);
-  await saveCountersByJenis({});
-  cachedCounters = {};
+
+  const { error } = await supabaseClient
+    .from("surat")
+    .delete()
+    .neq("id", 0);
+
+  if (error) {
+    console.error("Gagal menghapus semua riwayat:", error);
+    alert("Gagal menghapus riwayat: " + error.message);
+    return;
+  }
+
   await renderRiwayat();
   await refreshNomorPreview();
 }
-
+  
 async function renderRiwayat() {
   const list = await loadRiwayat();
   const wrap = $("riwayatWrap");
@@ -595,7 +645,7 @@ async function renderRiwayat() {
       <td>${escapeHtml(r.hal)}</td>
       <td>${escapeHtml(r.kepada || "-")}</td>
       <td>${escapeHtml(r.tanggal)}</td>
-      <td><button type="button" class="btn-history danger" onclick="hapusRiwayat(${originalIndex})">Hapus</button></td>
+      <td><button type="button" class="btn-history danger" onclick="hapusRiwayat(${JSON.stringify(r.id)})">Hapus</button></td>
     </tr>`;
   }).join("");
   wrap.innerHTML = `<table class="riwayat"><thead><tr><th>Nomor</th><th>Perihal</th><th>Kepada</th><th>Tanggal</th><th>Aksi</th></tr></thead><tbody>${rows}</tbody></table>`;
@@ -1266,33 +1316,32 @@ async function reserveNomor(payload) {
 }
 
 async function finalizeHistory(payload, counterToSave) {
-  if (counterToSave !== null) {
-    const counters = counterToSave.counters || {};
-    counters[counterToSave.code] = counterToSave.nextCounter;
-    await saveCountersByJenis(counters);
-  }
-  const riwayat = await loadRiwayat();
-  riwayat.push({
-    nomor: payload.nomor,
-    code: payload.code,
-    hal: payload.hal,
-    kepada: payload.kepada,
-    tanggal: payload.tanggalSurat
-  });
+  const { error } = await supabaseClient
+    .from("surat")
+    .insert({
+      nomor: payload.nomor,
+      jenis: payload.code || "",
+      tanggal: payload.tanggalSurat || "",
+      hal: payload.hal || "",
+      kepada: payload.kepada || "",
+      isi: Array.isArray(payload.paragraf)
+        ? payload.paragraf.join("\n\n")
+        : "",
+      kota: payload.kotaSurat || "",
+      periode: payload.periode || ""
+    });
 
-  // Nomor manual ikut menjadi nomor terakhir untuk nomor otomatis.
-  // Contoh: manual 19 -> nomor otomatis berikutnya menjadi 20.
-  if (manualNomorMode) {
-    const manualUrut = extractNomorUrut(payload.nomor);
-    const countersNow = await loadCountersByJenis();
-    countersNow[payload.code] = Math.max(Number(countersNow[payload.code] || 0), manualUrut);
-    await saveCountersByJenis(countersNow);
-    cachedCounters = countersNow;
+  if (error) {
+    console.error("Gagal menyimpan surat ke Supabase:", error);
+    alert("Surat berhasil dibuat, tetapi riwayat gagal disimpan: " + error.message);
+    return;
   }
 
-  await saveRiwayat(riwayat);
   await renderRiwayat();
-  if (!manualNomorMode) await refreshNomorPreview();
+
+  if (!manualNomorMode) {
+    await refreshNomorPreview();
+  }
 }
 
 async function handleGenerateDocx() {
