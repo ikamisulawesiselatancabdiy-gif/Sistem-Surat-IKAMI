@@ -503,7 +503,7 @@ $("btnEditNomor").addEventListener("click", () => {
 async function loadRiwayat() {
   const { data, error } = await supabaseClient
     .from("surat")
-    .select("*")
+    .select("id, created_at, nomor, jenis, tanggal, hal, kepada, isi, kota, periode")
     .order("created_at", { ascending: true });
 
   if (error) {
