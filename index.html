@@ -1331,11 +1331,16 @@ async function finalizeHistory(payload, counterToSave) {
       periode: payload.periode || ""
     });
 
-  if (error) {
-    console.error("Gagal menyimpan surat ke Supabase:", error);
-    alert("Surat berhasil dibuat, tetapi riwayat gagal disimpan: " + error.message);
-    return;
-  }
+if (error) {
+  console.error("GAGAL SUPABASE DETAIL:", {
+    message: error.message,
+    details: error.details,
+    hint: error.hint,
+    code: error.code
+  });
+  alert("Gagal menyimpan riwayat: " + error.message);
+  return;
+}
 
   await renderRiwayat();
 
