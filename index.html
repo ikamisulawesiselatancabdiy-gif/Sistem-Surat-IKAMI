@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-  const SUPABASE_URL = "https://tfrsfsmblnirryohgwvr.supabase.co/rest/v1/";
+  const SUPABASE_URL = "https://tfrsfsmblnirryohgwvr.supabase.co";
   const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_utw3A6ej5Y6zVcitd1zDaw_kpTqgedA";
   const supabaseClient = window.supabase.createClient(
     SUPABASE_URL,
@@ -436,32 +436,51 @@ function formatTanggalIndo(iso) {
   return `${d} ${BULAN_ID[m - 1]} ${y}`;
 }
 
-// ---------- Nomor surat (terpisah per jenis) ----------
-// Setiap jenis surat memiliki nomor urut sendiri. Contoh: A.1 bisa 001,
-// A.2 juga mulai dari 001, bukan meneruskan nomor A.1.
+// ---------- Nomor surat + riwayat (sinkron Supabase) ----------
 let manualNomorMode = false;
 let cachedCounters = {};
 
-async function loadCountersByJenis() {
-  try {
-    if (window.storage && typeof window.storage.get === "function") {
-      const res = await window.storage.get("nomor_urut_by_jenis", true);
-      return res ? JSON.parse(res.value) : {};
-    }
-    const raw = localStorage.getItem("nomor_urut_by_jenis");
-    return raw ? JSON.parse(raw) : {};
-  } catch (e) {
-    return {};
+async function loadRiwayat() {
+  const { data, error } = await supabaseClient
+    .from("surat")
+    .select("id, created_at, nomor, jenis, tanggal, hal, kepada, isi, kota, periode")
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    console.error("Gagal memuat riwayat:", error);
+    throw new Error("Gagal memuat riwayat: " + error.message);
   }
+
+  return data || [];
 }
 
-async function saveCountersByJenis(counters) {
-  const value = JSON.stringify(counters);
-  if (window.storage && typeof window.storage.set === "function") {
-    await window.storage.set("nomor_urut_by_jenis", value, true);
-  } else {
-    localStorage.setItem("nomor_urut_by_jenis", value);
+async function loadCountersByJenis() {
+  const rows = await loadRiwayat();
+  const counters = {};
+
+  for (const item of rows) {
+    const code = String(
+      item.jenis || extractKodeSurat(item.nomor) || ""
+    ).trim();
+
+    const n = extractNomorUrut(item.nomor);
+
+    if (!code || !n) continue;
+
+    counters[code] = Math.max(
+      Number(counters[code] || 0),
+      n
+    );
   }
+
+  cachedCounters = counters;
+  return counters;
+}
+
+// Counter tidak lagi disimpan di localStorage.
+// Nilai selalu dihitung dari nomor terbesar di Supabase.
+async function saveCountersByJenis(counters) {
+  cachedCounters = counters || {};
 }
 
 function buildNomor(counterVal) {
@@ -469,57 +488,53 @@ function buildNomor(counterVal) {
   const iso = $("tanggal").value || todayISO();
   const [y, m] = iso.split("-").map(Number);
   const nomorStr = String(counterVal).padStart(3, "0");
-  // Romawi terakhir adalah bulan surat, bukan nomor urut.
+
   return `${nomorStr}/${code}/IKAMI-C-DIY/${ROMAWI[m - 1]}/${y}`;
 }
 
 async function refreshNomorPreview() {
   if (manualNomorMode) return;
+
   const counters = await loadCountersByJenis();
   const code = $("jenis").value;
   const current = Number(counters[code] || 0);
-  cachedCounters = counters;
   const next = current + 1;
+
+  cachedCounters = counters;
   $("nomorPreview").textContent = buildNomor(next);
 }
 
-$("btnEditNomor").addEventListener("click", () => {
+$("btnEditNomor").addEventListener("click", async () => {
   if (!manualNomorMode) {
     manualNomorMode = true;
+
     const box = $("nomorPreview");
     const current = box.textContent;
-    box.outerHTML = `<input type="text" id="nomorPreview" class="num" style="max-width:280px;border:1px solid var(--line);border-radius:7px;padding:6px 10px;" value="${current}"/>`;
+
+    box.outerHTML = `
+      <input
+        type="text"
+        id="nomorPreview"
+        class="num"
+        style="max-width:280px;border:1px solid var(--line);border-radius:7px;padding:6px 10px;"
+        value="${current}"
+      />
+    `;
+
     $("btnEditNomor").textContent = "Pakai otomatis";
   } else {
     manualNomorMode = false;
     $("btnEditNomor").textContent = "Ubah manual";
+
     const input = $("nomorPreview");
-    input.outerHTML = `<span class="num" id="nomorPreview">memuat…</span>`;
-    refreshNomorPreview();
+    input.outerHTML = `
+      <span class="num" id="nomorPreview">memuat…</span>
+    `;
+
+    await refreshNomorPreview();
   }
 });
 
-// ---------- Riwayat ----------
-async function loadRiwayat() {
-  try {
-    if (window.storage && typeof window.storage.get === "function") {
-      const res = await window.storage.get("riwayat_surat", true);
-      return res ? JSON.parse(res.value) : [];
-    }
-    const raw = localStorage.getItem("riwayat_surat");
-    return raw ? JSON.parse(raw) : [];
-  } catch (e) {
-    return [];
-  }
-}
-async function saveRiwayat(list) {
-  const value = JSON.stringify(list.slice(-100));
-  if (window.storage && typeof window.storage.set === "function") {
-    await window.storage.set("riwayat_surat", value, true);
-  } else {
-    localStorage.setItem("riwayat_surat", value);
-  }
-}
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -535,70 +550,160 @@ function extractNomorUrut(nomor) {
 }
 
 function extractKodeSurat(nomor) {
-  const m = String(nomor || "").trim().match(/^\d+\/([^\/]+)\/IKAMI-C-DIY\//i);
+  const m = String(nomor || "")
+    .trim()
+    .match(/^\d+\/([^\/]+)\/IKAMI-C-DIY\//i);
+
   return m ? m[1] : "";
 }
 
 async function syncCountersFromHistory(list = null) {
-  const rows = Array.isArray(list) ? list : await loadRiwayat();
+  const rows = Array.isArray(list)
+    ? list
+    : await loadRiwayat();
+
   const counters = {};
+
   for (const item of rows) {
-    const code = String(item.code || extractKodeSurat(item.nomor) || "").trim();
+    const code = String(
+      item.jenis || item.code || extractKodeSurat(item.nomor) || ""
+    ).trim();
+
     const n = extractNomorUrut(item.nomor);
+
     if (!code || !n) continue;
-    counters[code] = Math.max(Number(counters[code] || 0), n);
+
+    counters[code] = Math.max(
+      Number(counters[code] || 0),
+      n
+    );
   }
-  await saveCountersByJenis(counters);
+
   cachedCounters = counters;
   return counters;
 }
 
-async function hapusRiwayat(index) {
+async function hapusRiwayat(id) {
   const list = await loadRiwayat();
-  if (index < 0 || index >= list.length) return;
-  const item = list[index];
-  const ok = confirm(`Hapus surat ${item.nomor || "ini"} dari riwayat?\n\nNomor urut akan disesuaikan dengan riwayat yang tersisa.`);
+  const item = list.find(
+    r => String(r.id) === String(id)
+  );
+
+  if (!item) return;
+
+  const ok = confirm(
+    `Hapus surat ${item.nomor || "ini"} dari riwayat?\n\n` +
+    `Nomor otomatis akan mengikuti nomor terbesar yang masih tersimpan.`
+  );
+
   if (!ok) return;
-  list.splice(index, 1);
-  await saveRiwayat(list);
-  await syncCountersFromHistory(list);
+
+  const { error } = await supabaseClient
+    .from("surat")
+    .delete()
+    .eq("id", id);
+
+  if (error) {
+    throw new Error(
+      "Gagal menghapus riwayat: " + error.message
+    );
+  }
+
+  await syncCountersFromHistory();
   await renderRiwayat();
   await refreshNomorPreview();
 }
 
 async function hapusSemuaRiwayat() {
   const list = await loadRiwayat();
+
   if (!list.length) return;
-  const ok = confirm("Hapus semua riwayat surat?\n\nRiwayat dan seluruh nomor urut otomatis akan direset ke 0.");
+
+  const ok = confirm(
+    "Hapus semua riwayat surat?\n\n" +
+    "Nomor otomatis akan kembali ke 001."
+  );
+
   if (!ok) return;
-  await saveRiwayat([]);
-  await saveCountersByJenis({});
+
+  const { error } = await supabaseClient
+    .from("surat")
+    .delete()
+    .neq("id", 0);
+
+  if (error) {
+    throw new Error(
+      "Gagal menghapus semua riwayat: " + error.message
+    );
+  }
+
   cachedCounters = {};
+
   await renderRiwayat();
   await refreshNomorPreview();
 }
 
 async function renderRiwayat() {
   const list = await loadRiwayat();
+
   const wrap = $("riwayatWrap");
   const clearBtn = $("btnHapusSemuaRiwayat");
-  if (clearBtn) clearBtn.disabled = !list.length;
+
+  if (clearBtn) {
+    clearBtn.disabled = !list.length;
+  }
+
   if (!list.length) {
-    wrap.innerHTML = '<div class="empty-hint">Belum ada surat yang dibuat lewat aplikasi ini.</div>';
+    wrap.innerHTML =
+      '<div class="empty-hint">Belum ada surat yang dibuat lewat aplikasi ini.</div>';
     return;
   }
-  const rows = list.slice().reverse().map((r, reverseIndex) => {
-    const originalIndex = list.length - 1 - reverseIndex;
-    return `
-    <tr>
-      <td><span class="code-pill">${escapeHtml(r.nomor)}</span></td>
-      <td>${escapeHtml(r.hal)}</td>
-      <td>${escapeHtml(r.kepada || "-")}</td>
-      <td>${escapeHtml(r.tanggal)}</td>
-      <td><button type="button" class="btn-history danger" onclick="hapusRiwayat(${originalIndex})">Hapus</button></td>
-    </tr>`;
-  }).join("");
-  wrap.innerHTML = `<table class="riwayat"><thead><tr><th>Nomor</th><th>Perihal</th><th>Kepada</th><th>Tanggal</th><th>Aksi</th></tr></thead><tbody>${rows}</tbody></table>`;
+
+  const rows = list
+    .slice()
+    .reverse()
+    .map(r => `
+      <tr>
+        <td>
+          <span class="code-pill">
+            ${escapeHtml(r.nomor)}
+          </span>
+        </td>
+
+        <td>${escapeHtml(r.hal)}</td>
+        <td>${escapeHtml(r.kepada || "-")}</td>
+        <td>${escapeHtml(r.tanggal || "-")}</td>
+
+        <td>
+          <button
+            type="button"
+            class="btn-history danger"
+            onclick="hapusRiwayat(${JSON.stringify(r.id)})"
+          >
+            Hapus
+          </button>
+        </td>
+      </tr>
+    `)
+    .join("");
+
+  wrap.innerHTML = `
+    <table class="riwayat">
+      <thead>
+        <tr>
+          <th>Nomor</th>
+          <th>Perihal</th>
+          <th>Kepada</th>
+          <th>Tanggal</th>
+          <th>Aksi</th>
+        </tr>
+      </thead>
+
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
 }
 
 async function ensureDocxLibs(){ return; }
@@ -1266,33 +1371,34 @@ async function reserveNomor(payload) {
 }
 
 async function finalizeHistory(payload, counterToSave) {
-  if (counterToSave !== null) {
-    const counters = counterToSave.counters || {};
-    counters[counterToSave.code] = counterToSave.nextCounter;
-    await saveCountersByJenis(counters);
-  }
-  const riwayat = await loadRiwayat();
-  riwayat.push({
-    nomor: payload.nomor,
-    code: payload.code,
-    hal: payload.hal,
-    kepada: payload.kepada,
-    tanggal: payload.tanggalSurat
-  });
+  const { error } = await supabaseClient
+    .from("surat")
+    .insert({
+      nomor: payload.nomor,
+      jenis: payload.code,
+      tanggal: payload.iso,
+      hal: payload.hal,
+      kepada: payload.kepada,
+      isi: Array.isArray(payload.paragraf)
+        ? payload.paragraf.join("\n\n")
+        : "",
+      kota: payload.kotaSurat,
+      periode: payload.periode
+    });
 
-  // Nomor manual ikut menjadi nomor terakhir untuk nomor otomatis.
-  // Contoh: manual 19 -> nomor otomatis berikutnya menjadi 20.
-  if (manualNomorMode) {
-    const manualUrut = extractNomorUrut(payload.nomor);
-    const countersNow = await loadCountersByJenis();
-    countersNow[payload.code] = Math.max(Number(countersNow[payload.code] || 0), manualUrut);
-    await saveCountersByJenis(countersNow);
-    cachedCounters = countersNow;
+  if (error) {
+    throw new Error(
+      "Gagal menyimpan riwayat: " + error.message
+    );
   }
 
-  await saveRiwayat(riwayat);
+  cachedCounters = await loadCountersByJenis();
+
   await renderRiwayat();
-  if (!manualNomorMode) await refreshNomorPreview();
+
+  if (!manualNomorMode) {
+    await refreshNomorPreview();
+  }
 }
 
 async function handleGenerateDocx() {
